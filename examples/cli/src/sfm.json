@@ -1,0 +1,12 @@
+{
+  "unused_mask": "bathinov0.png",
+  "unused_size": 0.2,
+  "focal_length": 2,
+  "reduce_memory": false,
+  "unused_auto_resampling": true,
+  "oversample": 1.1,
+  "defocus": 0,
+  "lambda": 600e-9,
+  "gamma": 4,
+  "unused_color_temp_k": 6500
+}
