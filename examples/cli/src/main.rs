@@ -1,16 +1,17 @@
-use image::{Rgb, RgbImage};
+use std::clone::Clone;
+use image::{GenericImageView, Rgb, RgbImage};
 use ndarray::{s, ArrayView2};
-use ndarray::{Array2, Zip};
-use num_complex::Complex;
+use ndarray::{Array2};
+use num_complex::{Complex, Complex64};
 use palette::{FromColor, Lch, LinSrgb, Srgb};
 use serde::{Deserialize, Serialize};
 use summed_field_method::Field;
 use summed_field_method::{resample_shape_min, sfm_asm_part_1, sfm_asm_part_2, sfm_asm_part_3};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Config {
-    //mask: String,
-    //size: f64,
+    mask: String,
+    size: f64,
     focal_length: f64,
     reduce_memory: bool,
     //auto_resampling: bool,
@@ -26,50 +27,39 @@ pub fn main() {
     let contents = std::fs::read_to_string(file_path).expect("Couldn't find or load sfm.json.");
 
     let c: Config = serde_json::from_str(&contents).unwrap();
-    println!("{}", serde_json::to_string_pretty(&c).unwrap()); 
+    println!("{}", serde_json::to_string_pretty(&c).unwrap());
 
-    /* spider test image */
-    let od = 0.0254 * 6.0;
-    let mask_shape = 4096;
-    let n_vanes = 4;
-    let vane_width = 0.002;
-    let vane_offset = 0.1;
-    let r_outer = od / 2.0;
-    let r_co = od / 2.0 * 0.47;
-
-    let input_field = generate_mask(mask_shape, n_vanes, vane_width, vane_offset, r_outer, r_co);
+    let z = c.focal_length + c.defocus;
+   
+    /* load image */
+    let (input_field, mask_shape) = load_image(c.clone());
     let input_intensity = input_field.values.map(|e| e.norm_sqr());
-    save_real_image("test_input.png", input_intensity.view(), 1.0, true).unwrap();
-
-    let lambda = c.lambda;
-    let fl = c.focal_length;
-    let z = fl + c.defocus;
-    let oversample = c.oversample;
+    save_real_image("test_cli_input.png", input_intensity.view(), 1.0, true).unwrap();
 
     let (resample_shape, _factor) = resample_shape_min(
         input_field.values.shape(),
         input_field.pitch,
-        lambda,
-        fl,
-        oversample,
+        c.lambda,
+        c.focal_length,
+        c.oversample,
     );
 
     let gamma = (c.gamma, c.gamma);
     let tile_shape = [
-        (mask_shape as f64 * oversample).ceil() as usize,
-        (mask_shape as f64 * oversample).ceil() as usize,
+        (mask_shape as f64 * c.oversample).ceil() as usize,
+        (mask_shape as f64 * c.oversample).ceil() as usize,
     ];
 
     let mut input_spectrum = sfm_asm_part_1(
         input_field,
-        fl,
-        &[lambda, lambda * 1.1],
+        c.focal_length,
+        &[c.lambda, c.lambda * 1.1],
         tile_shape,
         resample_shape,
         c.reduce_memory,
     );
-    let output_spectrum = sfm_asm_part_2(input_spectrum.swap_remove(0), z, lambda);
-    save_complex_image("test_spectrum.png", output_spectrum.values.view()).unwrap();
+    let output_spectrum = sfm_asm_part_2(input_spectrum.swap_remove(0), z, c.lambda);
+    save_complex_image("test_cli_spectrum.png", output_spectrum.values.view()).unwrap();
 
     let super_sample = 1;
     let mut super_sample_output =
@@ -94,12 +84,8 @@ pub fn main() {
     let output_intensity = super_sample_output.map(|e| e.norm_sqr());
     let output_log_intensity = log_intensity(output_intensity.view(), 1e-10);
 
-    save_real_image("test_output.png", output_log_intensity.view(), 1.0, true).unwrap();
-    save_complex_image("test_outputc.png", super_sample_output.view()).unwrap();
-}
-
-pub(crate) fn div_up(num: usize, denom: usize) -> usize {
-    (num + denom - 1) / denom
+    save_real_image("test_cli_output.png", output_log_intensity.view(), 1.0, true).unwrap();
+    save_complex_image("test_cli_outputc.png", super_sample_output.view()).unwrap();
 }
 
 pub fn save_grayscale_real_image<T: AsRef<std::path::Path> + std::fmt::Debug>(
@@ -177,64 +163,6 @@ pub fn save_real_image<T: AsRef<std::path::Path> + std::fmt::Debug>(
     Ok(())
 }
 
-// returns 1.0 if greater than nominal, with a soft transition of a distance of 1.0 straddling the nominal transition.
-fn soft_greater_than(x: f64, x_nominal: f64, pitch: f64) -> f64 {
-    if x < x_nominal - 0.5 * pitch {
-        0.0
-    } else if x > x_nominal + 0.5 * pitch {
-        1.0
-    } else {
-        (x - (x_nominal - 0.5 * pitch)) / pitch
-    }
-}
-
-// generate an aperture obstructured by a secondary mirror and support vanes
-pub fn generate_mask(
-    shape: usize,
-    n_vanes: usize,
-    vane_width: f64,
-    vane_offset: f64,
-    r_outer: f64,
-    r_co: f64,
-) -> Field {
-    let pitch = r_outer / (div_up(shape, 2) - 2) as f64;
-
-    let c = (shape / 2) as f64;
-
-    let mut mask = Array2::zeros([shape, shape]);
-
-    Zip::indexed(&mut mask).par_for_each(|(y, x), e| {
-        let mut value = 1.0;
-
-        let y0 = (y as f64 - c) * pitch;
-        let x0 = (x as f64 - c) * pitch;
-        let r = (x0 * x0 + y0 * y0).sqrt();
-
-        value *= soft_greater_than(r, r_co, pitch);
-        value *= 1.0 - soft_greater_than(r, r_outer, pitch);
-
-        for i in 0..n_vanes {
-            let theta = (i as f64 / n_vanes as f64) * ::std::f64::consts::PI * 2.0 + vane_offset;
-            let y1 = theta.cos();
-            let x1 = theta.sin();
-
-            // distance from line
-            let d = (-x1 * (y1 - y0) - (x1 - x0) * -y1).abs() / (x1 * x1 + y1 * y1).sqrt();
-
-            let projected_r = x1 * x0 + y1 * y0;
-            if projected_r > 0.0 {
-                value *= soft_greater_than(d, vane_width * 0.5, pitch);
-            }
-        }
-        *e = Complex::new(value, 0.0);
-    });
-
-    Field {
-        values: mask,
-        pitch: (pitch, pitch),
-    }
-}
-
 pub fn log_intensity(arr: ArrayView2<f64>, min: f64) -> Array2<f64> {
     let log_min = -min.ln();
     let max = arr.iter().fold(0.0, |max, e| e.max(max));
@@ -278,3 +206,34 @@ pub fn save_complex_image<T: AsRef<std::path::Path> + std::fmt::Debug>(
     }
     Ok(())
 }
+
+fn load_image(c : Config) -> (Field, usize) {
+    let img = image::open(c.mask).expect("File not found!");
+
+    let width: usize = img.width().try_into().unwrap();
+    let height: usize = img.height().try_into().unwrap();
+
+    let mut mask: Array2<Complex64> = Array2::zeros([width, height]);
+
+    for (x, y, pixel) in img.pixels() {
+        let x: usize = x.try_into().unwrap();
+        let y: usize = y.try_into().unwrap();
+
+        // PNG is big endian, right?
+        let re: f64 = u32::from_be_bytes(pixel.0).into();
+
+        mask[[x, y]] = Complex64::new(re, 0.0);
+    
+        }
+
+    let p = c.size / width as f64;
+
+    return (
+        Field {
+            values: mask,
+            pitch: (p, p),
+        },
+        width,
+    )
+}
+

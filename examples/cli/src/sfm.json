@@ -1,6 +1,6 @@
 {
-  "unused_mask": "bathinov0.png",
-  "unused_size": 0.2,
+  "mask": "test_input.png",
+  "size": 0.1,
   "focal_length": 2,
   "reduce_memory": false,
   "unused_auto_resampling": true,
