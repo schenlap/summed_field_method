@@ -1,3 +1,4 @@
+use image::DynamicImage;
 use std::clone::Clone;
 use image::{GenericImageView, Rgb, RgbImage};
 use ndarray::{s, ArrayView2};
@@ -207,6 +208,22 @@ pub fn save_complex_image<T: AsRef<std::path::Path> + std::fmt::Debug>(
     Ok(())
 }
 
+fn pixel_max_val(image: &image::DynamicImage) -> u32 {
+    use DynamicImage::*;
+
+    match image {
+        ImageLuma8(_) => 255,
+        ImageLumaA8(_) => 255,
+        ImageRgb8(_) => 255,
+        ImageRgba8(_) => 255,
+        ImageLuma16(_) => 65535,
+        ImageLumaA16(_) => 65535,
+        ImageRgb16(_) => 65535,
+        ImageRgba16(_) => 65535,
+        &_ => 1,
+    }
+}
+
 fn load_image(c : Config) -> (Field, usize) {
     let img = image::open(c.mask).expect("File not found!");
 
@@ -215,15 +232,19 @@ fn load_image(c : Config) -> (Field, usize) {
 
     let mut mask: Array2<Complex64> = Array2::zeros([width, height]);
 
+    let pixel_max = pixel_max_val(&img);
+
     for (x, y, pixel) in img.pixels() {
         let x: usize = x.try_into().unwrap();
         let y: usize = y.try_into().unwrap();
 
-        // PNG is big endian, right?
-        let re: f64 = u32::from_be_bytes(pixel.0).into();
+        // calculate luminance
+        let [r,g,b,a] = pixel.0;
+        let mut re: f64 = ((r as u32 + g as u32 + b as u32) / 3 as u32) as f64 * a as f64 / pixel_max as f64; // simple enough here and very fast
+
+        re = re / pixel_max as f64;
 
         mask[[x, y]] = Complex64::new(re, 0.0);
-    
         }
 
     let p = c.size / width as f64;
